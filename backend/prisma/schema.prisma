@@ -1,0 +1,249 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model exam_questions {
+  id                 BigInt               @id @default(autoincrement())
+  exam_id            BigInt
+  type               exam_questions_type
+  title              String               @db.VarChar(255)
+  description        String?              @db.Text
+  points             Int?                 @default(10)
+  starter_code       Json?
+  time_limit_seconds Int?                 @default(5)
+  memory_limit_mb    Int?                 @default(256)
+  input_format       String?              @db.Text
+  output_format      String?              @db.Text
+  constraints        String?              @db.Text
+  allowed_languages  Json?
+  created_at         DateTime             @db.DateTime(0)
+  updated_at         DateTime             @db.DateTime(0)
+  exams              exams                @relation(fields: [exam_id], references: [id], onDelete: Cascade, map: "exam_questions_ibfk_1")
+  question_options   question_options[]
+  submission_answers submission_answers[]
+  test_cases         test_cases[]
+
+  @@index([exam_id], map: "exam_id")
+}
+
+model exams {
+  id                BigInt           @id @default(autoincrement())
+  title             String           @db.VarChar(255)
+  description       String?          @db.Text
+  course            String?          @default("") @db.VarChar(255)
+  faculty_id        BigInt
+  published_at      DateTime?        @db.DateTime(0)
+  start_time        DateTime?        @db.DateTime(0)
+  end_time          DateTime?        @db.DateTime(0)
+  duration_minutes  Int?             @default(60)
+  status            exams_status?    @default(draft)
+  proctoring_config Json?
+  total_marks       Int?             @default(0)
+  passing_marks     Int?             @default(40)
+  created_at        DateTime         @db.DateTime(0)
+  updated_at        DateTime         @db.DateTime(0)
+  exam_questions    exam_questions[]
+  users             users            @relation(fields: [faculty_id], references: [id], onDelete: Cascade, map: "exams_ibfk_1")
+  restrictions      restrictions[]
+  submissions       submissions[]
+  violations        violations[]
+
+  @@index([faculty_id], map: "faculty_id")
+}
+
+model question_options {
+  id             BigInt         @id @default(autoincrement())
+  question_id    BigInt
+  text           String         @db.VarChar(255)
+  is_correct     Boolean?       @default(false)
+  order_index    Int?           @default(0)
+  created_at     DateTime       @db.DateTime(0)
+  updated_at     DateTime       @db.DateTime(0)
+  exam_questions exam_questions @relation(fields: [question_id], references: [id], onDelete: Cascade, map: "question_options_ibfk_1")
+
+  @@index([question_id], map: "question_id")
+}
+
+model restrictions {
+  id                                      BigInt    @id @default(autoincrement())
+  student_id                              BigInt
+  exam_id                                 BigInt
+  reason                                  String    @db.VarChar(500)
+  restricted_at                           DateTime? @db.DateTime(0)
+  expires_at                              DateTime  @db.DateTime(0)
+  is_active                               Boolean?  @default(true)
+  violation_count                         Int?      @default(0)
+  imposed_by_id                           BigInt?
+  created_at                              DateTime  @db.DateTime(0)
+  updated_at                              DateTime  @db.DateTime(0)
+  exams                                   exams     @relation(fields: [exam_id], references: [id], onDelete: Cascade, map: "restrictions_ibfk_10")
+  users_restrictions_imposed_by_idTousers users?    @relation("restrictions_imposed_by_idTousers", fields: [imposed_by_id], references: [id], onDelete: Cascade, map: "restrictions_ibfk_11")
+  users_restrictions_student_idTousers    users     @relation("restrictions_student_idTousers", fields: [student_id], references: [id], onDelete: Cascade, map: "restrictions_ibfk_9")
+
+  @@index([exam_id], map: "exam_id")
+  @@index([imposed_by_id], map: "imposed_by_id")
+  @@index([expires_at], map: "restrictions_expires_at")
+  @@index([student_id, exam_id], map: "restrictions_student_id_exam_id")
+}
+
+model submission_answers {
+  id              BigInt                            @id @default(autoincrement())
+  submission_id   BigInt
+  question_id     BigInt
+  question_type   submission_answers_question_type?
+  selected_option Int?                              @default(-1)
+  code            String?                           @db.LongText
+  language        String?                           @default("python") @db.VarChar(255)
+  text_answer     String?                           @db.LongText
+  is_correct      Boolean?                          @default(false)
+  score           Int?                              @default(0)
+  max_score       Int?                              @default(0)
+  verdict         String?                           @db.VarChar(255)
+  passed_tests    Int?                              @default(0)
+  total_tests     Int?                              @default(0)
+  created_at      DateTime                          @db.DateTime(0)
+  updated_at      DateTime                          @db.DateTime(0)
+  exam_questions  exam_questions                    @relation(fields: [question_id], references: [id], onDelete: Cascade, map: "submission_answers_ibfk_10")
+  submissions     submissions                       @relation(fields: [submission_id], references: [id], onDelete: Cascade, map: "submission_answers_ibfk_9")
+
+  @@index([question_id], map: "question_id")
+  @@index([submission_id], map: "submission_id")
+}
+
+model submissions {
+  id                 BigInt               @id @default(autoincrement())
+  exam_id            BigInt
+  student_id         BigInt
+  status             submissions_status?  @default(in_progress)
+  total_score        Int?                 @default(0)
+  max_score          Int?                 @default(0)
+  percentage         Decimal?             @default(0.00) @db.Decimal(5, 2)
+  started_at         DateTime?            @db.DateTime(0)
+  submitted_at       DateTime?            @db.DateTime(0)
+  auto_submit        Boolean?             @default(false)
+  auto_submit_reason String?              @db.Text
+  violation_count    Int?                 @default(0)
+  created_at         DateTime             @db.DateTime(0)
+  updated_at         DateTime             @db.DateTime(0)
+  submission_answers submission_answers[]
+  users              users                @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "submissions_ibfk_10")
+  exams              exams                @relation(fields: [exam_id], references: [id], onDelete: Cascade, map: "submissions_ibfk_9")
+
+  @@unique([exam_id, student_id], map: "unique_exam_student")
+  @@index([student_id], map: "student_id")
+}
+
+model test_cases {
+  id              BigInt         @id @default(autoincrement())
+  question_id     BigInt
+  input           String?        @db.Text
+  expected_output String?        @db.Text
+  is_hidden       Boolean?       @default(false)
+  points          Int?           @default(0)
+  order_index     Int?           @default(0)
+  created_at      DateTime       @db.DateTime(0)
+  updated_at      DateTime       @db.DateTime(0)
+  exam_questions  exam_questions @relation(fields: [question_id], references: [id], onDelete: Cascade, map: "test_cases_ibfk_1")
+
+  @@index([question_id], map: "question_id")
+}
+
+model users {
+  id                                             BigInt         @id @default(autoincrement())
+  name                                           String         @db.VarChar(255)
+  student_id                                     String?        @db.VarChar(255)
+  faculty_id                                     String?        @db.VarChar(255)
+  email                                          String         @unique(map: "email") @db.VarChar(255)
+  password                                       String         @db.VarChar(255)
+  role                                           users_role?    @default(student)
+  department                                     String?        @db.VarChar(255)
+  is_active                                      Boolean?       @default(true)
+  last_login                                     DateTime?      @db.DateTime(0)
+  password_reset_required                        Boolean?       @default(false)
+  created_at                                     DateTime       @db.DateTime(0)
+  updated_at                                     DateTime       @db.DateTime(0)
+  exams                                          exams[]
+  restrictions_restrictions_imposed_by_idTousers restrictions[] @relation("restrictions_imposed_by_idTousers")
+  restrictions_restrictions_student_idTousers    restrictions[] @relation("restrictions_student_idTousers")
+  submissions                                    submissions[]
+  violations                                     violations[]
+}
+
+model violations {
+  id         BigInt               @id @default(autoincrement())
+  exam_id    BigInt
+  student_id BigInt
+  type       violations_type
+  severity   violations_severity? @default(medium)
+  details    String?              @db.Text
+  created_at DateTime             @db.DateTime(0)
+  updated_at DateTime             @db.DateTime(0)
+  users      users                @relation(fields: [student_id], references: [id], onDelete: Cascade, map: "violations_ibfk_10")
+  exams      exams                @relation(fields: [exam_id], references: [id], onDelete: Cascade, map: "violations_ibfk_9")
+
+  @@index([exam_id, student_id], map: "violations_exam_id_student_id")
+  @@index([student_id, created_at], map: "violations_student_id_created_at")
+}
+
+enum exam_questions_type {
+  mcq
+  coding
+  subjective
+}
+
+enum submission_answers_question_type {
+  mcq
+  coding
+  subjective
+}
+
+enum submissions_status {
+  in_progress
+  submitted
+  auto_submitted
+  disqualified
+}
+
+enum violations_type {
+  tab_switch
+  window_blur
+  fullscreen_exit
+  copy_paste
+  right_click
+  devtools
+  keyboard_shortcut
+  screen_resize
+  multiple_faces
+  no_face
+  face_mismatch
+  app_switch
+  browser_switch
+  minimize
+  other
+}
+
+enum violations_severity {
+  low
+  medium
+  high
+  critical
+}
+
+enum users_role {
+  student
+  teacher
+  admin
+  faculty
+}
+
+enum exams_status {
+  draft
+  published
+  active
+  ended
+}

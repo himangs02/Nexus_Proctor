@@ -1,11 +1,19 @@
-import User from '../models_sql/User.js';
+import prisma from '../lib/prisma.js';
+import { hashPassword, comparePassword } from '../lib/password.js';
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
-import { Op } from 'sequelize';
 
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '4h' });
+  return jwt.sign({ id: Number(id) }, process.env.JWT_SECRET, { expiresIn: '4h' });
 };
+
+/**
+ * Helper: serialize a Prisma user row for JSON response.
+ * Converts BigInt id to Number so JSON.stringify doesn't break.
+ */
+const serializeUser = (user) => ({
+  ...user,
+  id: Number(user.id),
+});
 
 export const registerUser = async (req, res) => {
   const { name, studentId, email, password, role } = req.body;
@@ -28,7 +36,7 @@ export const registerUser = async (req, res) => {
 
     // Check if email already exists
     console.log(`[AUTH] Checking duplicate email: ${trimmedEmail}`);
-    const emailExists = await User.findOne({
+    const emailExists = await prisma.users.findUnique({
       where: { email: trimmedEmail }
     });
 
@@ -43,8 +51,8 @@ export const registerUser = async (req, res) => {
     // Check if studentId already exists (only for students with non-empty studentId)
     if (trimmedStudentId && (role === 'student' || !role)) {
       console.log(`[AUTH] Checking duplicate studentId: ${trimmedStudentId}`);
-      const studentIdExists = await User.findOne({
-        where: { studentId: trimmedStudentId }
+      const studentIdExists = await prisma.users.findFirst({
+        where: { student_id: trimmedStudentId }
       });
 
       if (studentIdExists) {
@@ -56,29 +64,33 @@ export const registerUser = async (req, res) => {
       }
     }
 
+    // Hash password explicitly (Prisma has no hooks)
+    const hashedPassword = await hashPassword(password);
+
     const userData = {
       name,
       email: trimmedEmail,
-      password, // Sequelize hook will hash this
+      password: hashedPassword,
       role: role || 'student',
-      isActive: true,
-      passwordResetRequired: false
+      is_active: true,
+      password_reset_required: false,
+      created_at: new Date(),
+      updated_at: new Date(),
     };
 
     if (userData.role === 'teacher' || userData.role === 'faculty') {
-      userData.facultyId = `FAC-${Date.now()}`;
+      userData.faculty_id = `FAC-${Date.now()}`;
     } else if (trimmedStudentId) {
-      // Only set studentId if it's not empty
-      userData.studentId = trimmedStudentId;
+      userData.student_id = trimmedStudentId;
     }
 
     console.log(`[AUTH] Creating user: email=${trimmedEmail} role=${userData.role}`);
-    const user = await User.create(userData);
+    const user = await prisma.users.create({ data: userData });
     console.log(`[AUTH] ✅ User created successfully: id=${user.id} email=${user.email}`);
 
     res.status(201).json({
       success: true,
-      _id: user.id,
+      _id: Number(user.id),
       name: user.name,
       email: user.email,
       role: user.role,
@@ -108,12 +120,12 @@ export const loginUser = async (req, res) => {
     }
 
     console.log(`[AUTH] Querying user by: ${loginIdentifier}`);
-    const user = await User.findOne({
+    const user = await prisma.users.findFirst({
       where: {
-        [Op.or]: [
+        OR: [
           { email: loginIdentifier },
-          { studentId: loginIdentifier },
-          { facultyId: loginIdentifier }
+          { student_id: loginIdentifier },
+          { faculty_id: loginIdentifier }
         ]
       }
     });
@@ -122,26 +134,29 @@ export const loginUser = async (req, res) => {
       console.warn(`[AUTH] Login failed: no user found for ${loginIdentifier}`);
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
-    if (!user.isActive) {
+    if (!user.is_active) {
       console.warn(`[AUTH] Login failed: account disabled for ${loginIdentifier}`);
       return res.status(403).json({ success: false, message: 'Account is disabled. Please contact admin.' });
     }
 
-    const passwordMatch = await user.matchPassword(password);
+    const passwordMatch = await comparePassword(password, user.password);
     if (passwordMatch) {
       // Update last login
-      await user.update({ lastLogin: new Date() });
+      await prisma.users.update({
+        where: { id: user.id },
+        data: { last_login: new Date(), updated_at: new Date() }
+      });
       console.log(`[AUTH] ✅ Login successful: id=${user.id} role=${user.role}`);
 
       res.json({
         success: true,
-        _id: user.id,
+        _id: Number(user.id),
         name: user.name,
         email: user.email,
         role: user.role,
-        studentId: user.studentId,
-        facultyId: user.facultyId,
-        passwordResetRequired: user.passwordResetRequired,
+        studentId: user.student_id,
+        facultyId: user.faculty_id,
+        passwordResetRequired: user.password_reset_required,
         token: generateToken(user.id),
       });
     } else {
@@ -159,18 +174,26 @@ export const changePassword = async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   console.log(`[AUTH] PUT /change-password | userId=${req.user?.id}`);
   try {
-    const user = await User.findByPk(req.user.id);
+    const user = await prisma.users.findUnique({
+      where: { id: BigInt(req.user.id) }
+    });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    if (currentPassword && !(await user.matchPassword(currentPassword))) {
+    if (currentPassword && !(await comparePassword(currentPassword, user.password))) {
       console.warn(`[AUTH] Change password rejected: wrong current password for userId=${req.user.id}`);
       return res.status(400).json({ success: false, message: 'Current password incorrect' });
     }
 
-    // Update password (hook will hash it)
-    await user.update({
-      password: newPassword,
-      passwordResetRequired: false
+    // Hash new password explicitly
+    const hashedPassword = await hashPassword(newPassword);
+
+    await prisma.users.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        password_reset_required: false,
+        updated_at: new Date(),
+      }
     });
 
     console.log(`[AUTH] ✅ Password changed for userId=${req.user.id}`);

@@ -1,5 +1,5 @@
-import User from '../models_sql/User.js';
-import { Op } from 'sequelize';
+import prisma from '../lib/prisma.js';
+import { hashPassword } from '../lib/password.js';
 import crypto from 'crypto';
 import { sendFacultyCredentials } from '../services/emailService.js';
 
@@ -30,35 +30,45 @@ const generateFacultyId = async () => {
   let exists = true;
   while (exists) {
     id = `FAC${Math.floor(1000 + Math.random() * 9000)}`;
-    const user = await User.findOne({ where: { facultyId: id } });
+    const user = await prisma.users.findFirst({ where: { faculty_id: id } });
     if (!user) exists = false;
   }
   return id;
 };
 
+/**
+ * Helper: serialize BigInt fields for JSON responses
+ */
+const serializeUser = (user) => ({
+  ...user,
+  id: Number(user.id),
+});
+
 export const getFacultyList = async (req, res) => {
   try {
     const { search, department } = req.query;
+
     const where = {
-      role: { [Op.in]: ['teacher', 'faculty'] }
+      role: { in: ['teacher', 'faculty'] }
     };
 
     if (search) {
-      where[Op.or] = [
-        { name: { [Op.like]: `%${search}%` } },
-        { email: { [Op.like]: `%${search}%` } },
-        { facultyId: { [Op.like]: `%${search}%` } }
+      where.OR = [
+        { name: { contains: search } },
+        { email: { contains: search } },
+        { faculty_id: { contains: search } }
       ];
     }
     if (department && department !== 'All') {
       where.department = department;
     }
 
-    const faculty = await User.findAll({
+    const faculty = await prisma.users.findMany({
       where,
-      order: [['created_at', 'DESC']]
+      orderBy: { created_at: 'desc' }
     });
-    res.json({ success: true, data: faculty });
+
+    res.json({ success: true, data: faculty.map(serializeUser) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -66,14 +76,14 @@ export const getFacultyList = async (req, res) => {
 
 export const createFaculty = async (req, res) => {
   try {
-    const { name, email, department } = req.body; // Password will be auto-generated
+    const { name, email, department } = req.body;
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!email || !emailRegex.test(email)) {
       return res.status(400).json({ success: false, message: 'Valid email is required.' });
     }
 
-    const exists = await User.findOne({ where: { email } });
+    const exists = await prisma.users.findUnique({ where: { email } });
     if (exists) {
       return res.status(400).json({ success: false, message: 'Email already registered' });
     }
@@ -81,21 +91,28 @@ export const createFaculty = async (req, res) => {
     const facultyId = await generateFacultyId();
     const generatedPassword = generateSecurePassword();
 
-    const newFaculty = await User.create({
-      name,
-      email,
-      facultyId,
-      department,
-      password: generatedPassword, // Sequelize hook will hash this
-      role: 'faculty',
-      isActive: true,
-      passwordResetRequired: true
+    // Hash password explicitly (no Sequelize hooks)
+    const hashedPassword = await hashPassword(generatedPassword);
+
+    const newFaculty = await prisma.users.create({
+      data: {
+        name,
+        email,
+        faculty_id: facultyId,
+        department,
+        password: hashedPassword,
+        role: 'faculty',
+        is_active: true,
+        password_reset_required: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }
     });
 
     try {
       await sendFacultyCredentials({
         email: newFaculty.email,
-        facultyId: newFaculty.facultyId,
+        facultyId: newFaculty.faculty_id,
         tempPassword: generatedPassword
       });
     } catch (emailErr) {
@@ -103,11 +120,15 @@ export const createFaculty = async (req, res) => {
       return res.status(201).json({ 
         success: true, 
         message: 'Faculty provisioned successfully, but email failed to send.', 
-        data: newFaculty 
+        data: serializeUser(newFaculty)
       });
     }
 
-    return res.status(201).json({ success: true, message: 'Faculty provisioned successfully and email sent!', data: newFaculty });
+    return res.status(201).json({ 
+      success: true, 
+      message: 'Faculty provisioned successfully and email sent!', 
+      data: serializeUser(newFaculty) 
+    });
   } catch (err) {
     console.error("Creation Error:", err);
     return res.status(500).json({ success: false, message: err.message });
@@ -116,11 +137,14 @@ export const createFaculty = async (req, res) => {
 
 export const toggleFacultyStatus = async (req, res) => {
   try {
-    const faculty = await User.findByPk(req.params.id);
+    const faculty = await prisma.users.findUnique({
+      where: { id: BigInt(req.params.id) }
+    });
     if (!faculty) return res.status(404).json({ success: false, message: 'Faculty not found' });
 
-    await faculty.update({
-      isActive: !faculty.isActive
+    await prisma.users.update({
+      where: { id: faculty.id },
+      data: { is_active: !faculty.is_active, updated_at: new Date() }
     });
 
     res.json({ success: true, message: `Faculty status updated successfully` });
@@ -136,15 +160,23 @@ export const resetFacultyPassword = async (req, res) => {
       return res.status(400).json({ success: false, message: 'New password is required.' });
     }
 
-    const faculty = await User.findByPk(req.params.id);
+    const faculty = await prisma.users.findUnique({
+      where: { id: BigInt(req.params.id) }
+    });
     if (!faculty) {
       return res.status(404).json({ success: false, message: 'Faculty not found' });
     }
 
-    // Update password (Sequelize hook will hash it)
-    await faculty.update({
-      password,
-      passwordResetRequired: false
+    // Hash password explicitly
+    const hashedPassword = await hashPassword(password);
+
+    await prisma.users.update({
+      where: { id: faculty.id },
+      data: {
+        password: hashedPassword,
+        password_reset_required: false,
+        updated_at: new Date(),
+      }
     });
     
     res.json({ success: true, message: `Password manually updated successfully!` });
@@ -155,10 +187,12 @@ export const resetFacultyPassword = async (req, res) => {
 
 export const deleteFaculty = async (req, res) => {
   try {
-    const faculty = await User.findByPk(req.params.id);
+    const faculty = await prisma.users.findUnique({
+      where: { id: BigInt(req.params.id) }
+    });
     if (!faculty) return res.status(404).json({ success: false, message: 'Faculty not found' });
     
-    await faculty.destroy();
+    await prisma.users.delete({ where: { id: faculty.id } });
     res.json({ success: true, message: 'Faculty account deleted successfully' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

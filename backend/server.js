@@ -11,11 +11,9 @@ import app from './src/app.js';
 import { connectDB } from './src/config/db.js';
 import { setupProctorSockets } from './src/sockets/proctorSocket.js';
 import { sendEmail } from './src/services/emailService.js';
-// Import models to initialize associations
-import './src/models_sql/index.js';
+import prisma from './src/lib/prisma.js';
 
-// Cleaned up outdated Nodemailer logs
-// ── SMTP Test Route (Step 4) ───────────────────────────────────
+// ── SMTP Test Route ───────────────────────────────────────────
 app.get("/test-email", async (req, res) => {
   try {
     await sendEmail();
@@ -33,11 +31,11 @@ const startServer = async () => {
   }
 
   try {
-    // 2. Connect MySQL/Sequelize
+    // 2. Connect via Prisma
     await connectDB();
 
     // 3. Start Express server
-    const PORT = process.env.PORT || 5002; // Using 5002 as per .env and recent history
+    const PORT = process.env.PORT || 5002;
     const httpServer = createServer(app);
 
     // 4. Initialize Socket.IO
@@ -50,6 +48,7 @@ const startServer = async () => {
     httpServer.listen(PORT, () => {
       console.log(`🚀 NEXUS PROCTOR backend running on port ${PORT}`);
       console.log(`📡 Socket.io ready for real-time proctoring`);
+      console.log(`🔧 ORM: Prisma (migrated from Sequelize)`);
     });
 
     // Handle server errors
@@ -77,6 +76,19 @@ process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error.message);
   console.error(error.stack);
   process.exit(1);
+});
+
+// Graceful shutdown: disconnect Prisma
+process.on('SIGINT', async () => {
+  console.log('🛑 SIGINT received. Disconnecting Prisma...');
+  await prisma.$disconnect();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('🛑 SIGTERM received. Disconnecting Prisma...');
+  await prisma.$disconnect();
+  process.exit(0);
 });
 
 startServer();

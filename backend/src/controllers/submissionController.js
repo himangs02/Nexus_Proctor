@@ -1,20 +1,34 @@
-import Submission from '../models_sql/Submission.js';
-import SubmissionAnswer from '../models_sql/SubmissionAnswer.js';
-import Exam from '../models_sql/Exam.js';
-import ExamQuestion from '../models_sql/ExamQuestion.js';
-import Restriction from '../models_sql/Restriction.js';
-import User from '../models_sql/User.js';
-import { Op } from 'sequelize';
+import prisma from '../lib/prisma.js';
+
+/**
+ * Helper: Serialize BigInt fields recursively for JSON compatibility.
+ */
+const serializeBigInts = (obj) => {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'bigint') return Number(obj);
+  if (obj instanceof Date) return obj;
+  if (Array.isArray(obj)) return obj.map(serializeBigInts);
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const [key, value] of Object.entries(obj)) {
+      result[key] = serializeBigInts(value);
+    }
+    return result;
+  }
+  return obj;
+};
 
 /** POST /api/submissions/start/:examId — Start or resume a submission */
 export const startSubmission = async (req, res) => {
   try {
-    const { examId } = req.params;
-    const exam = await Exam.findByPk(examId);
+    const examId = BigInt(req.params.examId);
+    const studentId = BigInt(req.user.id);
+
+    const exam = await prisma.exams.findUnique({ where: { id: examId } });
     if (!exam) return res.status(404).json({ success: false, message: 'Exam not found' });
 
     const now = new Date();
-    const isAutoStarted = exam.status === 'published' && exam.startTime && new Date(exam.startTime) <= now;
+    const isAutoStarted = exam.status === 'published' && exam.start_time && new Date(exam.start_time) <= now;
 
     if (exam.status !== 'active' && !isAutoStarted) {
       return res.status(400).json({ success: false, message: 'Exam is not active yet. Please wait for the start time.' });
@@ -22,30 +36,33 @@ export const startSubmission = async (req, res) => {
 
     // If the student triggers the auto-start, update the DB
     if (isAutoStarted && exam.status !== 'active') {
-      await exam.update({ status: 'active' });
+      await prisma.exams.update({
+        where: { id: examId },
+        data: { status: 'active', updated_at: new Date() }
+      });
     }
 
     // Check restrictions
-    const restriction = await Restriction.findOne({
+    const restriction = await prisma.restrictions.findFirst({
       where: {
-        studentId: req.user.id,
-        examId,
-        isActive: true,
-        expiresAt: { [Op.gt]: new Date() }
+        student_id: studentId,
+        exam_id: examId,
+        is_active: true,
+        expires_at: { gt: new Date() }
       }
     });
 
     if (restriction) {
-      const mins = Math.ceil((new Date(restriction.expiresAt) - Date.now()) / 60000);
+      const mins = Math.ceil((new Date(restriction.expires_at) - Date.now()) / 60000);
       return res.status(403).json({
         success: false,
         message: `You are restricted from this exam. Try again in ${mins} minutes.`,
-        restriction: { reason: restriction.reason, expiresAt: restriction.expiresAt }
+        restriction: { reason: restriction.reason, expiresAt: restriction.expires_at }
       });
     }
 
-    let sub = await Submission.findOne({
-      where: { examId, studentId: req.user.id }
+    let sub = await prisma.submissions.findFirst({
+      where: { exam_id: examId, student_id: studentId }
     });
 
     if (sub && (sub.status === 'submitted' || sub.status === 'auto_submitted')) {
@@ -61,29 +78,44 @@ export const startSubmission = async (req, res) => {
     } else {
       try {
         // Create new submission
-        sub = await Submission.create({
-          examId,
-          studentId: req.user.id,
-          maxScore: exam.totalMarks
+        sub = await prisma.submissions.create({
+          data: {
+            exam_id: examId,
+            student_id: studentId,
+            max_score: exam.total_marks || 0,
+            started_at: new Date(),
+            created_at: new Date(),
+            updated_at: new Date(),
+          }
         });
 
         // Create empty answers for all questions
-        const questions = await ExamQuestion.findAll({ where: { examId } });
-        const answers = questions.map(q => ({
-          submissionId: sub.id,
-          questionId: q.id,
-          questionType: q.type,
-          selectedOption: -1,
-          code: '',
-          language: 'python',
-          textAnswer: '',
-          maxScore: q.points
-        }));
-        await SubmissionAnswer.bulkCreate(answers);
+        const questions = await prisma.exam_questions.findMany({
+          where: { exam_id: examId }
+        });
+
+        if (questions.length > 0) {
+          const answers = questions.map(q => ({
+            submission_id: sub.id,
+            question_id: q.id,
+            question_type: q.type,
+            selected_option: -1,
+            code: '',
+            language: 'python',
+            text_answer: '',
+            max_score: q.points || 0,
+            created_at: new Date(),
+            updated_at: new Date(),
+          }));
+
+          await prisma.submission_answers.createMany({ data: answers });
+        }
       } catch (err) {
-        // Handle race condition
-        if (err.name === 'SequelizeUniqueConstraintError') {
-          sub = await Submission.findOne({ where: { examId, studentId: req.user.id } });
+        // Handle race condition (unique constraint on exam_id + student_id)
+        if (err.code === 'P2002') {
+          sub = await prisma.submissions.findFirst({
+            where: { exam_id: examId, student_id: studentId }
+          });
           resumed = true;
           if (!sub) throw err;
         } else {
@@ -92,7 +124,7 @@ export const startSubmission = async (req, res) => {
       }
     }
 
-    res.json({ success: true, resumed, data: sub });
+    res.json({ success: true, resumed, data: serializeBigInts(sub) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -101,9 +133,11 @@ export const startSubmission = async (req, res) => {
 /** PUT /api/submissions/:id/save — Auto-save answers */
 export const saveAnswers = async (req, res) => {
   try {
-    const sub = await Submission.findByPk(req.params.id);
+    const sub = await prisma.submissions.findUnique({
+      where: { id: BigInt(req.params.id) }
+    });
     if (!sub) return res.status(404).json({ success: false, message: 'Submission not found' });
-    if (sub.studentId !== req.user.id) {
+    if (Number(sub.student_id) !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
     if (sub.status !== 'in_progress') {
@@ -114,20 +148,19 @@ export const saveAnswers = async (req, res) => {
     const { answers } = req.body;
     if (answers && Array.isArray(answers)) {
       for (const answerData of answers) {
-        await SubmissionAnswer.update(
-          {
-            selectedOption: answerData.selectedOption,
+        await prisma.submission_answers.updateMany({
+          where: {
+            submission_id: sub.id,
+            question_id: BigInt(answerData.questionId)
+          },
+          data: {
+            selected_option: answerData.selectedOption,
             code: answerData.code,
             language: answerData.language,
-            textAnswer: answerData.textAnswer
-          },
-          {
-            where: {
-              submissionId: sub.id,
-              questionId: answerData.questionId
-            }
+            text_answer: answerData.textAnswer,
+            updated_at: new Date(),
           }
-        );
+        });
       }
     }
 
@@ -140,33 +173,23 @@ export const saveAnswers = async (req, res) => {
 /** PUT /api/submissions/:id/submit — Final submission + auto-grade MCQs */
 export const submitExam = async (req, res) => {
   try {
-    const sub = await Submission.findByPk(req.params.id, {
-      include: [
-        {
-          model: SubmissionAnswer,
-          as: 'answers'
-        }
-      ]
+    const sub = await prisma.submissions.findUnique({
+      where: { id: BigInt(req.params.id) },
+      include: { submission_answers: true }
     });
 
     if (!sub) return res.status(404).json({ success: false, message: 'Submission not found' });
-    if (sub.studentId !== req.user.id) {
+    if (Number(sub.student_id) !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    const exam = await Exam.findByPk(sub.examId, {
-      include: [
-        {
-          model: ExamQuestion,
-          as: 'questions',
-          include: [
-            {
-              model: require('../models_sql/QuestionOption.js').default,
-              as: 'options'
-            }
-          ]
+    const exam = await prisma.exams.findUnique({
+      where: { id: sub.exam_id },
+      include: {
+        exam_questions: {
+          include: { question_options: true }
         }
-      ]
+      }
     });
 
     if (!exam) return res.status(404).json({ success: false, message: 'Exam not found' });
@@ -174,61 +197,68 @@ export const submitExam = async (req, res) => {
     // Update answers from request
     if (req.body.answers) {
       for (const answerData of req.body.answers) {
-        await SubmissionAnswer.update(
-          {
-            selectedOption: answerData.selectedOption,
+        await prisma.submission_answers.updateMany({
+          where: {
+            submission_id: sub.id,
+            question_id: BigInt(answerData.questionId)
+          },
+          data: {
+            selected_option: answerData.selectedOption,
             code: answerData.code,
             language: answerData.language,
-            textAnswer: answerData.textAnswer
-          },
-          {
-            where: {
-              submissionId: sub.id,
-              questionId: answerData.questionId
-            }
+            text_answer: answerData.textAnswer,
+            updated_at: new Date(),
           }
-        );
+        });
       }
     }
 
     // Reload answers after updates
-    const updatedAnswers = await SubmissionAnswer.findAll({
-      where: { submissionId: sub.id }
+    const updatedAnswers = await prisma.submission_answers.findMany({
+      where: { submission_id: sub.id }
     });
 
     // Auto-grade MCQs
     let totalScore = 0;
     for (const ans of updatedAnswers) {
-      const question = exam.questions.find(q => q.id === ans.questionId);
+      const question = exam.exam_questions.find(q => q.id === ans.question_id);
       if (!question) continue;
 
-      if (question.type === 'mcq' && ans.selectedOption >= 0) {
-        const correctOption = question.options.find(o => o.isCorrect === true);
-        const isCorrect = correctOption && correctOption.orderIndex === ans.selectedOption;
+      if (question.type === 'mcq' && ans.selected_option >= 0) {
+        const correctOption = question.question_options.find(o => o.is_correct === true);
+        const isCorrect = correctOption && correctOption.order_index === ans.selected_option;
         
-        await ans.update({
-          isCorrect,
-          score: isCorrect ? question.points : 0
+        await prisma.submission_answers.update({
+          where: { id: ans.id },
+          data: {
+            is_correct: isCorrect || false,
+            score: isCorrect ? (question.points || 0) : 0,
+            updated_at: new Date(),
+          }
         });
 
-        totalScore += isCorrect ? question.points : 0;
+        totalScore += isCorrect ? (question.points || 0) : 0;
       } else {
         totalScore += ans.score || 0;
       }
     }
 
     // Update submission
-    await sub.update({
-      totalScore,
-      maxScore: exam.totalMarks,
-      percentage: exam.totalMarks > 0 ? Math.round((totalScore / exam.totalMarks) * 100) : 0,
-      status: req.body.autoSubmit ? 'auto_submitted' : 'submitted',
-      autoSubmit: !!req.body.autoSubmit,
-      autoSubmitReason: req.body.reason || '',
-      submittedAt: new Date()
+    const updated = await prisma.submissions.update({
+      where: { id: sub.id },
+      data: {
+        total_score: totalScore,
+        max_score: exam.total_marks || 0,
+        percentage: exam.total_marks > 0 ? Math.round((totalScore / exam.total_marks) * 100) : 0,
+        status: req.body.autoSubmit ? 'auto_submitted' : 'submitted',
+        auto_submit: !!req.body.autoSubmit,
+        auto_submit_reason: req.body.reason || '',
+        submitted_at: new Date(),
+        updated_at: new Date(),
+      }
     });
 
-    res.json({ success: true, data: sub });
+    res.json({ success: true, data: serializeBigInts(updated) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -237,18 +267,23 @@ export const submitExam = async (req, res) => {
 /** GET /api/submissions/my — Student's submissions */
 export const getMySubmissions = async (req, res) => {
   try {
-    const subs = await Submission.findAll({
-      where: { studentId: req.user.id },
-      include: [
-        {
-          model: Exam,
-          as: 'exam',
-          attributes: ['id', 'title', 'totalMarks', 'passingMarks', 'durationMinutes']
+    const subs = await prisma.submissions.findMany({
+      where: { student_id: BigInt(req.user.id) },
+      include: {
+        exams: {
+          select: { id: true, title: true, total_marks: true, passing_marks: true, duration_minutes: true }
         }
-      ],
-      order: [['created_at', 'DESC']]
+      },
+      orderBy: { created_at: 'desc' }
     });
-    res.json({ success: true, data: subs });
+
+    // Map relation name for API contract compatibility
+    const mapped = subs.map(s => {
+      const { exams, ...rest } = s;
+      return { ...rest, exam: exams };
+    });
+
+    res.json({ success: true, data: serializeBigInts(mapped) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -257,18 +292,23 @@ export const getMySubmissions = async (req, res) => {
 /** GET /api/submissions/exam/:examId — Faculty view: all submissions for an exam */
 export const getExamSubmissions = async (req, res) => {
   try {
-    const subs = await Submission.findAll({
-      where: { examId: req.params.examId },
-      include: [
-        {
-          model: User,
-          as: 'student',
-          attributes: ['id', 'name', 'email', 'studentId']
+    const subs = await prisma.submissions.findMany({
+      where: { exam_id: BigInt(req.params.examId) },
+      include: {
+        users: {
+          select: { id: true, name: true, email: true, student_id: true }
         }
-      ],
-      order: [['totalScore', 'DESC']]
+      },
+      orderBy: { total_score: 'desc' }
     });
-    res.json({ success: true, data: subs });
+
+    // Map relation name
+    const mapped = subs.map(s => {
+      const { users, ...rest } = s;
+      return { ...rest, student: users };
+    });
+
+    res.json({ success: true, data: serializeBigInts(mapped) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
