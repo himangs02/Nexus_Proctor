@@ -15,7 +15,8 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:5175',
-  'https://nexusproctor.vercel.app'  // NO trailing slash — browsers omit it
+  'https://nexusproctor.vercel.app',  // NO trailing slash — browsers omit it
+  'https://nexusproctor-114owjc73.vercel.app' // User's actual frontend deployment
 ];
 
 app.use(cors({
