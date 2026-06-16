@@ -14,9 +14,7 @@ import { sendEmail } from './src/services/emailService.js';
 // Import models to initialize associations
 import './src/models_sql/index.js';
 
-console.log("EMAIL_USER:", process.env.EMAIL_USER);
-console.log("EMAIL_PASS:", process.env.EMAIL_PASS);
-
+// Cleaned up outdated Nodemailer logs
 // ── SMTP Test Route (Step 4) ───────────────────────────────────
 app.get("/test-email", async (req, res) => {
   try {
