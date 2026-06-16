@@ -14,9 +14,8 @@ const app = express();
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
-  'http://localhost:5175',
-  'https://nexusproctor.vercel.app',  // NO trailing slash — browsers omit it
-  'https://nexusproctor-114owjc73.vercel.app' // User's actual frontend deployment
+  'http://localhost:5175',  // NO trailing slash — browsers omit it
+  'https://nexusproctor.vercel.app/' // User's actual frontend deployment
 ];
 
 app.use(cors({
@@ -43,12 +42,12 @@ app.use((req, _res, next) => {
 });
 
 // ── API Routes ────────────────────────────────────────────────
-app.use('/api/auth',        authRoutes);
-app.use('/api/compiler',    compilerRoutes);
-app.use('/api/exams',       examRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/compiler', compilerRoutes);
+app.use('/api/exams', examRoutes);
 app.use('/api/submissions', submissionRoutes);
-app.use('/api/violations',  violationRoutes);
-app.use('/api/admin',       adminRoutes);
+app.use('/api/violations', violationRoutes);
+app.use('/api/admin', adminRoutes);
 
 // ── Health check ──────────────────────────────────────────────
 app.get('/api/test', (_req, res) => {
@@ -60,7 +59,7 @@ app.get('/test-email', async (_req, res) => {
   try {
     const user = process.env.EMAIL_USER;
     if (!user) throw new Error("EMAIL_USER not configured in .env");
-    
+
     await sendTestEmail(user);
     res.send("MAIL SENT");
   } catch (err) {
