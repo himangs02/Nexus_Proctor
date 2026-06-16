@@ -10,28 +10,36 @@ import { sendTestEmail } from './services/emailService.js';
 
 const app = express();
 
-// 🚨 THE REAL VIP LIST 🚨
+// ── Allowed Origins ────────────────────────────────────────────
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:5175',
-  'https://exam-proctar.vercel.app' // NO trailing slash!
+  'https://nexusproctor.vercel.app'  // NO trailing slash — browsers omit it
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like Postman) or allowed origins
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+    // Allow requests with no origin (Postman, server-to-server) or listed origins
+    if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.error('CORS Blocked:', origin); // Prints to Render logs if someone gets blocked
-      callback(new Error('CORS Policy Blocked this request'));
+      console.error('CORS Blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
     }
   },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
 
 app.use(express.json({ limit: '5mb' }));
+
+// ── Request logging ───────────────────────────────────────────
+app.use((req, _res, next) => {
+  console.log(`[REQ] ${req.method} ${req.path} | origin=${req.get('origin') || 'none'} | ip=${req.ip}`);
+  next();
+});
 
 // ── API Routes ────────────────────────────────────────────────
 app.use('/api/auth',        authRoutes);

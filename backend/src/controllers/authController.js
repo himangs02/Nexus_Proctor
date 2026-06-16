@@ -9,6 +9,7 @@ const generateToken = (id) => {
 
 export const registerUser = async (req, res) => {
   const { name, studentId, email, password, role } = req.body;
+  console.log(`[AUTH] POST /signup | origin=${req.get('origin')} | email=${email} | role=${role || 'student'}`);
 
   try {
     // Sanitize inputs
@@ -17,18 +18,22 @@ export const registerUser = async (req, res) => {
 
     // Validate inputs
     if (!trimmedEmail) {
+      console.warn('[AUTH] Registration rejected: email missing');
       return res.status(400).json({ success: false, message: 'Email is required' });
     }
     if (!password) {
+      console.warn('[AUTH] Registration rejected: password missing');
       return res.status(400).json({ success: false, message: 'Password is required' });
     }
 
     // Check if email already exists
+    console.log(`[AUTH] Checking duplicate email: ${trimmedEmail}`);
     const emailExists = await User.findOne({
       where: { email: trimmedEmail }
     });
 
     if (emailExists) {
+      console.warn(`[AUTH] Registration rejected: duplicate email ${trimmedEmail}`);
       return res.status(400).json({ 
         success: false, 
         message: 'Email already registered. Please use a different email or login.' 
@@ -37,11 +42,13 @@ export const registerUser = async (req, res) => {
 
     // Check if studentId already exists (only for students with non-empty studentId)
     if (trimmedStudentId && (role === 'student' || !role)) {
+      console.log(`[AUTH] Checking duplicate studentId: ${trimmedStudentId}`);
       const studentIdExists = await User.findOne({
         where: { studentId: trimmedStudentId }
       });
 
       if (studentIdExists) {
+        console.warn(`[AUTH] Registration rejected: duplicate studentId ${trimmedStudentId}`);
         return res.status(400).json({ 
           success: false, 
           message: 'Student ID already registered. Please use a different Student ID.' 
@@ -65,7 +72,9 @@ export const registerUser = async (req, res) => {
       userData.studentId = trimmedStudentId;
     }
 
+    console.log(`[AUTH] Creating user: email=${trimmedEmail} role=${userData.role}`);
     const user = await User.create(userData);
+    console.log(`[AUTH] ✅ User created successfully: id=${user.id} email=${user.email}`);
 
     res.status(201).json({
       success: true,
@@ -76,7 +85,8 @@ export const registerUser = async (req, res) => {
       token: generateToken(user.id),
     });
   } catch (error) {
-    console.error('Registration error:', error);
+    console.error('[AUTH] ❌ Registration DB error:', error.message);
+    console.error(error.stack);
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 };
@@ -86,15 +96,18 @@ export const loginUser = async (req, res) => {
   
   // Trim and normalize the login identifier
   const loginIdentifier = email ? email.trim().toLowerCase() : (id ? id.trim() : null);
+  console.log(`[AUTH] POST /login | origin=${req.get('origin')} | identifier=${loginIdentifier}`);
 
   try {
     if (!loginIdentifier || !password) {
+      console.warn('[AUTH] Login rejected: missing identifier or password');
       return res.status(400).json({ 
         success: false, 
         message: 'Email/ID and password are required' 
       });
     }
 
+    console.log(`[AUTH] Querying user by: ${loginIdentifier}`);
     const user = await User.findOne({
       where: {
         [Op.or]: [
@@ -105,14 +118,20 @@ export const loginUser = async (req, res) => {
       }
     });
 
-    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    if (!user.isActive) return res.status(403).json({ success: false, message: 'Account is disabled. Please contact admin.' });
+    if (!user) {
+      console.warn(`[AUTH] Login failed: no user found for ${loginIdentifier}`);
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+    if (!user.isActive) {
+      console.warn(`[AUTH] Login failed: account disabled for ${loginIdentifier}`);
+      return res.status(403).json({ success: false, message: 'Account is disabled. Please contact admin.' });
+    }
 
-    if (await user.matchPassword(password)) {
+    const passwordMatch = await user.matchPassword(password);
+    if (passwordMatch) {
       // Update last login
-      await user.update({
-        lastLogin: new Date()
-      });
+      await user.update({ lastLogin: new Date() });
+      console.log(`[AUTH] ✅ Login successful: id=${user.id} role=${user.role}`);
 
       res.json({
         success: true,
@@ -126,21 +145,25 @@ export const loginUser = async (req, res) => {
         token: generateToken(user.id),
       });
     } else {
+      console.warn(`[AUTH] Login failed: wrong password for ${loginIdentifier}`);
       res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('[AUTH] ❌ Login DB error:', error.message);
+    console.error(error.stack);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
 export const changePassword = async (req, res) => {
   const { currentPassword, newPassword } = req.body;
+  console.log(`[AUTH] PUT /change-password | userId=${req.user?.id}`);
   try {
     const user = await User.findByPk(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     if (currentPassword && !(await user.matchPassword(currentPassword))) {
+      console.warn(`[AUTH] Change password rejected: wrong current password for userId=${req.user.id}`);
       return res.status(400).json({ success: false, message: 'Current password incorrect' });
     }
 
@@ -150,8 +173,10 @@ export const changePassword = async (req, res) => {
       passwordResetRequired: false
     });
 
+    console.log(`[AUTH] ✅ Password changed for userId=${req.user.id}`);
     res.json({ success: true, message: 'Password updated successfully' });
   } catch (err) {
+    console.error('[AUTH] ❌ Change password error:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 };

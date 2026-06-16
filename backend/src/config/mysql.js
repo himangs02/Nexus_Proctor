@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 
 // Resolve .env relative to the backend root (two levels up from this file)
 const __filename = fileURLToPath(import.meta.url);
@@ -19,8 +20,21 @@ if (missingEnv.length > 0) {
 }
 
 const DB_NAME = process.env.DB_NAME;
+const isProduction = process.env.NODE_ENV === "production";
 
 console.log(`🔧 Sequelize target database: "${DB_NAME}" @ ${process.env.DB_HOST}:${process.env.DB_PORT}`);
+console.log(`🔒 SSL mode: ${isProduction ? "ENABLED (Aiven)" : "DISABLED (local)"}`);
+
+// ── SSL config for Aiven (required in production) ────────────────────────
+const sslOptions = isProduction
+  ? {
+      ssl: {
+        require: true,
+        rejectUnauthorized: process.env.DB_SSL_CA ? true : false,
+        ...(process.env.DB_SSL_CA && { ca: fs.readFileSync(process.env.DB_SSL_CA) }),
+      },
+    }
+  : {};
 
 const sequelize = new Sequelize(
   DB_NAME,
@@ -28,18 +42,19 @@ const sequelize = new Sequelize(
   process.env.DB_PASSWORD,
   {
     host: process.env.DB_HOST,
-    port: process.env.DB_PORT || 3306,
+    port: parseInt(process.env.DB_PORT) || 3306,
     dialect: "mysql",
-    logging: process.env.NODE_ENV === 'development' ? console.log : false,
+    dialectOptions: sslOptions,
+    logging: process.env.NODE_ENV === "development" ? console.log : false,
     underscored: true,
     pool: {
       max: 5,
       min: 0,
       acquire: 30000,
-      idle: 10000
-    }
+      idle: 10000,
+    },
   }
 );
 
 export default sequelize;
-export { DB_NAME };
+export { DB_NAME };
